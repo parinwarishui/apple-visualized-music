@@ -41,6 +41,55 @@ import Testing
         #expect(clock.position(at: 7200) == 7200)
     }
 
+    @Test func holdsStillWhileMusicIsBuffering() {
+        var clock = PlaybackClock()
+        clock.duration = 200
+        clock.sync(position: 40, playing: true, at: 0)
+        clock.sync(position: 40.1, playing: true, at: 2)    // "playing", but barely moved
+        #expect(clock.isStalled)
+        #expect(clock.position(at: 6) == 40.1)                // doesn't run ahead
+        clock.sync(position: 40.6, playing: true, at: 2.5)  // moving again
+        #expect(!clock.isStalled)
+        #expect(clock.position(at: 4.5) == 42.6)
+    }
+
+    @Test func aSteadyPlayheadIsNotAStall() {
+        var clock = PlaybackClock()
+        clock.duration = 200
+        for step in 0..<10 {
+            clock.sync(position: 10 + Double(step) * 2, playing: true, at: Double(step) * 2)
+            #expect(!clock.isStalled)
+        }
+    }
+
+    @Test func aSeekIsNotAStall() {
+        var clock = PlaybackClock()
+        clock.duration = 200
+        clock.sync(position: 100, playing: true, at: 0)
+        clock.sync(position: 20, playing: true, at: 2)      // seeked back in Music
+        #expect(!clock.isStalled)
+    }
+
+    @Test func timeSpentPausedIsNotAStall() {
+        var clock = PlaybackClock()
+        clock.duration = 200
+        clock.sync(position: 50, playing: true, at: 0)
+        clock.sync(position: 52, playing: false, at: 2)
+        clock.sync(position: 52, playing: true, at: 60)     // resumed after a minute
+        #expect(!clock.isStalled)
+        clock.setPlaying(true, at: 61)
+        clock.sync(position: 53.5, playing: true, at: 62.5)
+        #expect(!clock.isStalled)
+    }
+
+    @Test func readingsTooCloseTogetherDontJudge() {
+        var clock = PlaybackClock()
+        clock.duration = 200
+        clock.sync(position: 10, playing: true, at: 0)
+        clock.sync(position: 10, playing: true, at: 0.1)
+        #expect(!clock.isStalled)
+    }
+
     @Test func formatsLikeMusic() {
         #expect(PlaybackClock.format(0) == "0:00")
         #expect(PlaybackClock.format(7.9) == "0:07")

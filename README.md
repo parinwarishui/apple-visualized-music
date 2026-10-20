@@ -11,7 +11,7 @@ AVM is a small SwiftUI app with a main window and a menu bar control. It uses Co
   - **Equalizer.** 10 bands (31 Hz to 16 kHz), ±12 dB each, with all 22 of Apple Music's EQ presets (Flat, Acoustic, Bass Booster, … Vocal Booster). Moving a slider switches the preset menu to **Custom**.
   - **Filter.** A low cut (high-pass, 20 Hz–2 kHz) and a high cut (low-pass, 200 Hz–20 kHz). Pull the high cut down for a muffled, "music in the next room" sound.
   - **Reverb.** Room, Chamber, Plate, Hall and Cathedral, with a wet/dry mix from 0 to 100%.
-- **Full-window visualizer.** The window is filled with the three most evident colours of the current song's cover over dark water, in one of three styles: **Bokeh**, **Water drops** or **Rain**. Each part of the music has its own colour, assigned at random for each song. While the effects are on, it reacts to the music: the bass shapes flash and swell on each **kick drum**, the treble ones flick on each **hi-hat or cymbal**, and the song's own swell with its overall loudness. Hits are sudden jumps in their band, not just loud passages, so a steady bass line doesn't keep the bass blobs lit. Everything is judged against the song's own recent level, so it works the same for loud pop and quiet classical. With the effects off it rests at a steady tone, and it dims when Music is paused. Colours cross-fade when the song changes, and the control panel's background slowly drifts through the same three colours. **Focus** and **Speed** set how sharp and how fast it is.
+- **Full-window visualizer.** The window is filled with the three most evident colours of the current song's cover over dark water, in one of four styles: **Bokeh**, **Water drops**, **Rain** or **Fish** (a school of fish over seaweed and coral, with rising bubbles). Each part of the music has its own colour, assigned at random for each song. While the effects are on, it reacts to the music: the bass shapes flash and swell on each **kick drum**, the treble ones flick on each **hi-hat or cymbal**, and the song's own swell with its overall loudness. Hits are sudden jumps in their band, not just loud passages, so a steady bass line doesn't keep the bass blobs lit. Everything is judged against the song's own recent level, so it works the same for loud pop and quiet classical. With the effects off it rests at a steady tone, and it dims when Music is paused. Colours cross-fade when the song changes, and the control panel's background slowly drifts through the same three colours. **Focus** and **Speed** set how sharp and how fast it is.
 - **Floating controls and a full-screen player.** The player, effects and visualizer settings sit in a panel you can tuck away with an arrow tab (or ⌃⌘S); with it hidden, the song's cover, title and artist sit large in the corner, like Music's full-screen view.
 - **Mini player.** The current song's cover, "Now Playing" and "Artist – Track", a playhead you can drag to seek, and shuffle, previous, play/pause, next and repeat buttons, laid out like Music's MiniPlayer. Changes made in Music itself (skips, seeks, shuffle) show up within a few seconds.
 - **Sensible defaults.** On first launch, Reverb is on (Hall at 35%), and the Equalizer and Filter are off, so the effects only change what you turn on.
@@ -103,7 +103,7 @@ The **tank** fills the whole window (resize it or go full screen and it grows wi
 
 - **Transport bar.** Shows what's happening ("Effects on Music", "Playing through AirPods") and has the main on/off switch. The switch starts and stops the whole capture; the effect switches below decide what's applied while it runs.
 - **Effects.** The **Filter**, **Reverb** and **Equalizer** modules, each with its own switch. Changes apply instantly while audio is playing.
-- **Visualizer** (pinned at the bottom). **Style** picks the visualizer: **Bokeh** (soft out-of-focus discs of light), **Water drops** (merging, wobbling liquid) or **Rain** (ripples on water, with a big drop on each kick). **Focus** goes from a dreamy blur (left) to sharp (right) and **Speed** sets how fast things move; right-click either to reset it.
+- **Visualizer** (pinned at the bottom). **Style** picks the visualizer: **Bokeh** (soft out-of-focus discs of light), **Water drops** (merging, wobbling liquid) **Rain** (ripples on water, with a big drop on each kick) or **Fish** (fish in the cover's colours that glow brighter with their part of the music, over swaying seaweed and coral, with bubbles rising). **Focus** goes from a dreamy blur (left) to sharp (right) and **Speed** sets how fast things move; right-click either to reset it.
 
 To use it:
 
@@ -168,7 +168,7 @@ Sources/AVM/
   TankPalette.swift      Cover colours: picking the three most evident, water, cross-fade, window tint, tone
   LoudnessTone.swift     RMS → the tank's tone, relative to the song's recent average
   Tank.swift             The tank: model (30 fps timer), blob layout, the view
-  TankMotion.swift       Visualizer styles' motion: water drops, rain ripples
+  TankMotion.swift       Visualizer styles' motion: water drops, rain ripples, fish, seaweed, coral, bubbles
   TankScenes.swift       Drawing for each visualizer style
   Views.swift            Main window and menu bar panel (SwiftUI)
 Tests/AVMTests/   Unit tests for the palette, tone, blob layout, playhead clock, cover search and band filters

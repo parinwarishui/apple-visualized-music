@@ -57,6 +57,8 @@ final class MusicNowPlaying {
     @ObservationIgnored private var holdShuffleUntil = 0.0
     @ObservationIgnored private var holdRepeatUntil = 0.0
     @ObservationIgnored private var emptyReadRetries = 0
+    /// Until then, the playhead is re-read every tick (see `resyncTicks`).
+    @ObservationIgnored private var closeWatchUntil = 0.0
     /// Every Apple Event to Music goes through this queue, in order, off the main thread.
     @ObservationIgnored private let eventQueue = DispatchQueue(label: "AVM.music", qos: .userInitiated)
 
@@ -66,8 +68,12 @@ final class MusicNowPlaying {
     }
 
     private static let bundleID = AVMController.musicBundleID
-    /// How often the playhead is re-read from Music while playing (in half-second ticks).
-    private static let resyncTicks = 10
+    /// How often the playhead is re-read from Music while playing (in half-second
+    /// ticks). Every tick while the clock is stalled or soon after a song starts
+    /// or resumes, so it's held or released within half a second. A read is
+    /// about 40 ms of Apple Events on a background queue.
+    private static let resyncTicks = 4
+    private static let closeWatchSeconds = 4.0
     /// After a button changes play state, shuffle or repeat here, Music can still
     /// report the old value for a moment. For this long, re-reads don't override
     /// what the user just set, so the button doesn't flick back and forth.
@@ -113,10 +119,20 @@ final class MusicNowPlaying {
         if let milliseconds = info["Total Time"] as? NSNumber {
             clock.duration = milliseconds.doubleValue / 1000
         }
-        clock.setPlaying(isPlaying, at: CACurrentMediaTime())
+        let at = CACurrentMediaTime()
+        let key = Self.key(name: trackName, artist: artist, album: album)
+        if key != trackKey {
+            // A new song starts from the top until Music says otherwise; the old
+            // song's position would otherwise carry over.
+            clock.jump(to: 0, playing: isPlaying, at: at)
+        } else {
+            clock.setPlaying(isPlaying, at: at)
+        }
+        // Songs often load or buffer just after starting or resuming: check
+        // closely for a while.
+        if isPlaying { closeWatchUntil = at + Self.closeWatchSeconds }
         updateTicker()
 
-        let key = Self.key(name: trackName, artist: artist, album: album)
         if key != trackKey {
             refresh()
         } else if access == .granted {
@@ -270,8 +286,9 @@ final class MusicNowPlaying {
     private func tick() {
         now = CACurrentMediaTime()
         ticks += 1
-        // Catch seeks and skips made in Music itself, and any drift.
-        if ticks % Self.resyncTicks == 0, access == .granted { readPlayback() }
+        // Catch seeks and skips made in Music itself, stalls, and any drift.
+        let closely = clock.isStalled || now < closeWatchUntil
+        if closely || ticks % Self.resyncTicks == 0, access == .granted { readPlayback() }
     }
 
     // MARK: Commands
@@ -299,7 +316,9 @@ final class MusicNowPlaying {
 
     func seek(to seconds: Double) {
         guard ensureControl() else { return }
-        clock.sync(position: seconds, playing: isPlaying, at: CACurrentMediaTime())
+        let at = CACurrentMediaTime()
+        clock.jump(to: seconds, playing: isPlaying, at: at)
+        closeWatchUntil = at + Self.closeWatchSeconds   // seeking a stream rebuffers
         send { try MusicEvents.seek(to: seconds) }
     }
 

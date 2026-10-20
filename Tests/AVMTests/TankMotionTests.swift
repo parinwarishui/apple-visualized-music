@@ -91,3 +91,101 @@ import Testing
         #expect(detector.count == 4)
     }
 }
+
+@Suite struct FishTankTests {
+    @Test func twelveFishFourPerBandInVariedSizes() {
+        #expect(FishTank.school.count == 12)
+        for band in TankBand.allCases {
+            let sizes = FishTank.school.filter { $0.band == band }.map(\.length)
+            #expect(sizes.count == 4)
+            #expect(Set(sizes).count == 4)
+        }
+        let bass = FishTank.school.filter { $0.band == .bass }.map(\.length).max()!
+        let treble = FishTank.school.filter { $0.band == .treble }.map(\.length).max()!
+        #expect(bass > treble)
+    }
+
+    @Test func fishStayInTheirWaterAboveTheSeaweed() {
+        let area = FishTank.swimArea.insetBy(dx: -1e-9, dy: -1e-9)
+        for fish in FishTank.school {
+            for step in 0..<3000 {
+                #expect(area.contains(FishTank.position(of: fish, time: Double(step) * 0.37)))
+            }
+        }
+    }
+
+    @Test func fishKeepMovingAndNeverJump() {
+        for fish in FishTank.school {
+            var previous = FishTank.position(of: fish, time: 0)
+            var travelled = 0.0
+            for step in 1...600 {
+                let p = FishTank.position(of: fish, time: Double(step) / 30)
+                let d = hypot(p.x - previous.x, p.y - previous.y)
+                #expect(d < 0.01)            // smooth at 30 fps
+                travelled += d
+                previous = p
+            }
+            #expect(travelled > 0.05)        // swims somewhere in 20 s
+        }
+    }
+
+    @Test func fishTiltAtMostThirtyDegreesAndFaceTheirWay() {
+        let steep = FishTank.facing(dx: 1, dy: 50)
+        #expect(steep.tilt == FishTank.maxTilt && !steep.left)
+        let left = FishTank.facing(dx: -3, dy: 0)
+        #expect(left.left && left.tilt == 0)
+    }
+
+    @Test func seaweedIsRootedAtTheBottomAndSways() {
+        let size = CGSize(width: 800, height: 500)
+        for strand in FishTank.seaweed {
+            let a = FishTank.strandPoints(strand, time: 3, sway: 0.5, in: size)
+            let b = FishTank.strandPoints(strand, time: 5, sway: 0.5, in: size)
+            #expect(a.first == b.first && a.first!.y == size.height)
+            #expect(abs(a.last!.x - b.last!.x) > 0.5)
+        }
+    }
+
+    @Test func coralGrowsUpFromTheBottom() {
+        let size = CGSize(width: 800, height: 500)
+        for coral in FishTank.corals {
+            for branch in FishTank.coralBranches(coral, scale: 300, in: size) {
+                #expect(branch.to.y < branch.from.y)
+                #expect(branch.from.y <= size.height)
+            }
+        }
+    }
+
+    @Test func bubblesRiseAndAreStableFrameToFrame() {
+        let a = FishTank.bubbles(time: 40), b = FishTank.bubbles(time: 40)
+        #expect(a == b && !a.isEmpty)
+        #expect(a.allSatisfy { (0..<1).contains($0.age) })
+        let later = FishTank.bubbles(time: 41)
+        // The same bubble (by index) is higher a second later.
+        let first = a.last!, again = later.first { abs($0.age - first.age - 1 / FishTank.bubbleLife) < 1e-9 }!
+        #expect(again.position.y < first.position.y)
+    }
+}
+
+@Suite struct FishGlowTests {
+    private let orange = RGB(r: 0.95, g: 0.45, b: 0.25)
+
+    @Test func bassAndTrebleFishFlareOnEachHit() {
+        #expect(FishTank.glow(band: .bass, tone: 0.4, hit: 0) == 0)
+        #expect(FishTank.glow(band: .bass, tone: 0.4, hit: 1) == 1)
+        #expect(FishTank.glow(band: .treble, tone: 0.4, hit: 0.5) == 0.5)
+    }
+
+    @Test func songFishGlowWithLoudness() {
+        #expect(FishTank.glow(band: .song, tone: 0.2, hit: 0) == 0)
+        #expect(FishTank.glow(band: .song, tone: 0.85, hit: 0) == 1)
+        #expect(FishTank.glow(band: .song, tone: 0.5, hit: 0) < 0.5)   // usual loudness: a soft glow
+    }
+
+    @Test func aFlareIsMuchBrighterThanRestButKeepsItsHue() {
+        let rest = FishTank.color(orange, glow: 0), peak = FishTank.color(orange, glow: 1)
+        #expect(peak.luminance > rest.luminance * 2)
+        #expect(peak.r > peak.b)                                         // still orange, not white
+        #expect(FishTank.color(orange, glow: 0.5) == orange)             // half glow is the cover colour itself
+    }
+}

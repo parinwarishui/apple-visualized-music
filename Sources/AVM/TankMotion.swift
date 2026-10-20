@@ -1,7 +1,8 @@
 //
 //  TankMotion.swift
-//  How things move in each visualizer style: the water drops' wobble and the
-//  rain's ripples. Pure value code
+//  How things move in each visualizer style: the water drops' wobble, the
+//  rain's ripples, and the fish tank's fish, seaweed, coral and bubbles. Pure
+//  value code
 //  (positions are 0...1 of the tank, or points for a given size), unit-tested.
 //  Drawing is in TankScenes.swift.
 //
@@ -11,7 +12,7 @@ import Foundation
 
 /// The visualizer styles, picked from the menu under the tank.
 enum TankMode: String, CaseIterable, Identifiable {
-    case bokeh, drops, rain
+    case bokeh, drops, rain, fish
 
     var id: Self { self }
 
@@ -23,6 +24,7 @@ enum TankMode: String, CaseIterable, Identifiable {
         case .bokeh: return 0.4
         case .drops: return 0.6
         case .rain: return 0.28
+        case .fish: return 0.35
         }
     }
 
@@ -31,6 +33,7 @@ enum TankMode: String, CaseIterable, Identifiable {
         case .bokeh: return "Bokeh"
         case .drops: return "Water drops"
         case .rain: return "Rain"
+        case .fish: return "Fish"
         }
     }
 }
@@ -165,3 +168,191 @@ struct RainField: Equatable {
         return tankHash(Int(bitPattern: UInt(truncatingIfNeeded: seed)), salt: 99)
     }
 }
+
+// MARK: - Fish
+
+/// The fish tank: a school of fish in the band colours, seaweed and coral along
+/// the bottom, and bubbles rising. Every position is a pure function of time.
+enum FishTank {
+    struct Fish {
+        var band: TankBand
+        /// Body length, as a share of the tank scale (`TankBlobs.scale`).
+        var length: Double
+        /// Seeds this fish's path, timing and tail beat.
+        var seed: Int
+    }
+
+    /// Four fish per band: bass fish the biggest, treble the smallest, each a
+    /// little different.
+    static let school: [Fish] = TankBand.allCases.enumerated().flatMap { bandIndex, band -> [Fish] in
+        let base: Double = band == .bass ? 0.16 : band == .song ? 0.12 : 0.085
+        return (0..<4).map { k in
+            let seed = bandIndex * 4 + k
+            return Fish(band: band, length: base * (0.75 + 0.5 * tankHash(seed, salt: 40)), seed: seed)
+        }
+    }
+
+    /// Where the fish swim, 0...1 of the tank: above the seaweed, clear of the edges.
+    static let swimArea = CGRect(x: 0.08, y: 0.10, width: 0.84, height: 0.62)
+
+    /// A fish's position (0...1 of the tank). Unpredictable but calculated: each
+    /// axis is two slow waves with periods in an irrational ratio (so the path
+    /// never repeats), run on a clock that speeds up and slows down (so the fish
+    /// dart and drift). The warp's slope stays positive, so a fish never swims
+    /// backwards in time.
+    static func position(of fish: Fish, time t: Double) -> CGPoint {
+        let h = { (salt: UInt64) in tankHash(fish.seed, salt: salt) }
+        let warp = t + 2.4 * sin(t / (6 + 4 * h(41)) + 6.28 * h(42))
+        // Vertical waves are slower than horizontal ones, so fish mostly cruise
+        // across the tank and rise or sink gently, as real fish do.
+        let px = 24 + 26 * h(43), py = 2.1 * px * (0.85 + 0.3 * h(44))
+        let x = 0.62 * sin(2 * .pi * warp / px + 6.28 * h(45)) + 0.38 * sin(2 * .pi * warp / (px * 0.618) + 6.28 * h(46))
+        let y = 0.62 * sin(2 * .pi * warp / py + 6.28 * h(47)) + 0.38 * sin(2 * .pi * warp / (py * 1.414) + 6.28 * h(48))
+        return CGPoint(x: swimArea.midX + swimArea.width / 2 * x,
+                       y: swimArea.midY + swimArea.height / 2 * y)
+    }
+
+    /// How far a fish tilts nose up or down, at most (radians, about 30°).
+    static let maxTilt = 0.52
+
+    /// Which way a fish faces for a movement (dx, dy in points): along it, with
+    /// the tilt capped, and whether it's swimming left (drawn mirrored).
+    static func facing(dx: Double, dy: Double) -> (tilt: Double, left: Bool) {
+        let left = dx < 0
+        let tilt = atan2(dy, abs(dx))
+        return (min(max(tilt, -maxTilt), maxTilt), left)
+    }
+
+    /// How strongly a fish glows, 0 resting ... 1 full. Bass and treble fish
+    /// flare on each kick or hi-hat (the same pulse that swells the other
+    /// styles' shapes, so just as quick); song fish glow with the song's
+    /// loudness above its usual level.
+    static func glow(band: TankBand, tone: Double, hit: Double) -> Double {
+        let value = band == .song ? (tone - 0.35) / 0.5 : hit
+        return min(max(value, 0), 1)
+    }
+
+    /// Brightness of a resting fish, as a share of its full colour.
+    static let restBrightness = 0.45
+    /// How far towards white a fully glowing fish goes.
+    static let peakWhite = 0.45
+
+    /// A fish's colour: dim at rest, its full cover colour at half glow, most of
+    /// the way to white at full glow, so a flare is obvious.
+    static func color(_ base: RGB, glow: Double) -> RGB {
+        let full = base.value < 0.65 ? base.scaled(by: 0.65 / max(base.value, 0.01)) : base   // dark covers still show
+        if glow < 0.5 {
+            return full.scaled(by: restBrightness + (1 - restBrightness) * glow * 2)
+        }
+        return full.mixed(with: .white, amount: peakWhite * (glow - 0.5) * 2)
+    }
+
+    /// The tail's swing in radians: faster when the fish is swimming faster.
+    static func tailSwing(of fish: Fish, time t: Double, speed: Double) -> Double {
+        0.45 * sin(t * (5 + 40 * min(speed, 0.25)) + 6.28 * tankHash(fish.seed, salt: 49))
+    }
+
+    // Seaweed
+
+    struct Strand {
+        /// Root position across the tank, 0...1.
+        var x: Double
+        /// Height as a share of the tank's height.
+        var height: Double
+        var band: TankBand
+        var seed: Int
+    }
+
+    static let seaweed: [Strand] = (0..<11).map { i in
+        Strand(x: (Double(i) + 0.2 + 0.6 * tankHash(i, salt: 50)) / 11,
+               height: 0.12 + 0.18 * tankHash(i, salt: 51),
+               band: TankBand.allCases[i % 3], seed: i)
+    }
+
+    /// Points up a strand, root first, swaying more towards the tip. `sway`
+    /// (0...1, the song's loudness) makes it sway further.
+    static func strandPoints(_ strand: Strand, time t: Double, sway: Double, in size: CGSize,
+                             segments: Int = 14) -> [CGPoint] {
+        let root = CGPoint(x: strand.x * size.width, y: size.height)
+        let length = strand.height * size.height
+        let phase = 6.28 * tankHash(strand.seed, salt: 52)
+        let reach = length * (0.12 + 0.10 * sway)
+        return (0...segments).map { k in
+            let u = Double(k) / Double(segments)
+            let bend = pow(u, 1.6) * (sin(t * 0.7 + phase - u * 2.2) + 0.35 * sin(t * 1.9 + phase * 2 - u * 4))
+            return CGPoint(x: root.x + reach * bend, y: root.y - length * u)
+        }
+    }
+
+    // Coral
+
+    struct Coral {
+        var x: Double
+        var size: Double
+        var band: TankBand
+        var seed: Int
+    }
+
+    static let corals: [Coral] = (0..<5).map { i in
+        Coral(x: (Double(i) + 0.5 + 0.3 * (tankHash(i, salt: 53) - 0.5)) / 5,
+              size: 0.09 + 0.06 * tankHash(i, salt: 54),
+              band: TankBand.allCases[(i + 1) % 3], seed: i)
+    }
+
+    struct Branch: Equatable {
+        var from: CGPoint
+        var to: CGPoint
+        var width: CGFloat
+    }
+
+    /// A coral as a fan of thick rounded branches from one root on the bottom,
+    /// each with a short twig (points). Fixed for each coral.
+    static func coralBranches(_ coral: Coral, scale: Double, in size: CGSize) -> [Branch] {
+        let reach = coral.size * scale * 1.4
+        let root = CGPoint(x: coral.x * size.width, y: size.height)
+        let width = CGFloat(coral.size * scale * 0.32)
+        return (0..<5).flatMap { j -> [Branch] in
+            let h = { (salt: UInt64) in tankHash(coral.seed * 5 + j, salt: salt) }
+            let angle = -Double.pi / 2 + (Double(j) - 2) * 0.38 + 0.15 * (h(55) - 0.5)   // straight up is -π/2
+            let length = reach * (0.55 + 0.45 * h(60))
+            let tip = CGPoint(x: root.x + length * cos(angle), y: root.y + length * sin(angle))
+            let fork = CGPoint(x: root.x + 0.6 * length * cos(angle), y: root.y + 0.6 * length * sin(angle))
+            let twigAngle = angle + (h(61) < 0.5 ? -0.6 : 0.6)
+            let twig = CGPoint(x: fork.x + 0.35 * length * cos(twigAngle), y: fork.y + 0.35 * length * sin(twigAngle))
+            return [Branch(from: root, to: tip, width: width),
+                    Branch(from: fork, to: twig, width: width * 0.75)]
+        }
+    }
+
+    // Bubbles
+
+    struct Bubble: Equatable {
+        /// 0...1 of the tank.
+        var position: CGPoint
+        /// 0 just released, 1 at the surface.
+        var age: Double
+        /// Radius, as a share of the tank scale.
+        var radius: Double
+    }
+
+    static let bubblesPerSecond = 1.6
+    static let bubbleLife = 8.0
+
+    /// Bubbles alive at `time`: each released from the bottom at a steady rate
+    /// at a spot fixed by its index, rising and wobbling to the surface.
+    static func bubbles(time t: Double) -> [Bubble] {
+        let first = Int(floor((t - bubbleLife) * bubblesPerSecond)) + 1
+        let last = Int(floor(t * bubblesPerSecond))
+        guard last >= first else { return [] }
+        return (first...last).map { i in
+            let born = Double(i) / bubblesPerSecond
+            let age = (t - born) / bubbleLife
+            let x0 = 0.06 + 0.88 * tankHash(i, salt: 56)
+            let wobble = 0.012 * sin((t - born) * (1.6 + tankHash(i, salt: 57)) + 6.28 * tankHash(i, salt: 58))
+            return Bubble(position: CGPoint(x: x0 + wobble, y: 1.02 - 1.06 * age),
+                          age: age,
+                          radius: 0.006 + 0.012 * tankHash(i, salt: 59))
+        }
+    }
+}
+
