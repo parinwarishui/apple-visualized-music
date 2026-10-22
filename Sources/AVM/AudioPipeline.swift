@@ -73,7 +73,7 @@ enum EqualizerBands {
 struct EffectsSettings {
     var reverbEnabled: Bool
     var wetDryMix: Float
-    var preset: AVAudioUnitReverbPreset
+    var preset: SupermassiveReverbPreset
 
     var filterEnabled: Bool
     var highPassCutoff: Float
@@ -343,7 +343,8 @@ final class TapPipeline {
     private var procID: AudioDeviceIOProcID?
     private var engine: AVAudioEngine?
     private var renderer: Renderer?
-    private let reverb = AVAudioUnitReverb()
+    private let reverb = AVAudioUnitReverb()   // fallback when Supermassive isn't installed
+    private var supermassive: SupermassiveReverb?
     private let equalizer = AVAudioUnitEQ(numberOfBands: EqualizerBands.frequencies.count)
     private let highPass = AVAudioUnitEffect(audioComponentDescription: AudioComponentDescription(
         componentType: kAudioUnitType_Effect,
@@ -382,9 +383,23 @@ final class TapPipeline {
     // standard host pattern (the AU synchronizes internally); none of these units
     // have a real-time-safe alternative.
 
-    func setWetDryMix(_ value: Float) { reverb.wetDryMix = value }
-    func setPreset(_ preset: AVAudioUnitReverbPreset) { reverb.loadFactoryPreset(preset) }
-    func setReverbEnabled(_ enabled: Bool) { setBypass(!enabled, on: reverb) }
+    /// Whether Supermassive loaded for the running pipeline (vs. the stock
+    /// reverb fallback). Read by the controller to show a status line.
+    var usingSupermassive: Bool { supermassive != nil }
+
+    /// Every control Supermassive itself reports, for the UI's "full control"
+    /// rack. Empty when the stock reverb is in use (nothing to show).
+    var supermassiveControls: [SupermassiveControl] { supermassive?.allControls ?? [] }
+
+    func setWetDryMix(_ value: Float) {
+        if let supermassive { supermassive.setMix(value) } else { reverb.wetDryMix = value }
+    }
+    func setPreset(_ preset: SupermassiveReverbPreset) {
+        if let supermassive { supermassive.apply(preset) } else { reverb.loadFactoryPreset(preset.stockFallback) }
+    }
+    func setReverbEnabled(_ enabled: Bool) {
+        if let supermassive { supermassive.setBypass(!enabled) } else { setBypass(!enabled, on: reverb) }
+    }
 
     func setHighPassCutoff(_ value: Float) {
         setAUParam(kHipassParam_CutoffFrequency, on: highPass, value: value)
@@ -564,16 +579,30 @@ final class TapPipeline {
             componentFlags: 0,
             componentFlagsMask: 0))
 
+        // Look for an installed Supermassive on every build, same as every other
+        // node here is freshly constructed per build (see buildPipeline in
+        // AVMController: a fresh TapPipeline is made on every start/rebuild, not
+        // reused). If it's not installed, `supermassive` stays nil and the stock
+        // `reverb` node below is used exactly as before.
+        supermassive = SupermassiveReverb.locate()
+        let reverbNode: AVAudioUnit = supermassive?.unit ?? reverb
+
         engine.attach(sourceNode)
         engine.attach(equalizer)
         engine.attach(highPass)
         engine.attach(lowPass)
-        engine.attach(reverb)
+        engine.attach(reverbNode)
         engine.attach(limiter)
 
-        reverb.loadFactoryPreset(settings.preset)
-        reverb.wetDryMix = settings.wetDryMix
-        setBypass(!settings.reverbEnabled, on: reverb)
+        if let supermassive {
+            supermassive.apply(settings.preset)
+            supermassive.setMix(settings.wetDryMix)
+            supermassive.setBypass(!settings.reverbEnabled)
+        } else {
+            reverb.loadFactoryPreset(settings.preset.stockFallback)
+            reverb.wetDryMix = settings.wetDryMix
+            setBypass(!settings.reverbEnabled, on: reverb)
+        }
 
         setAUParam(kHipassParam_CutoffFrequency, on: highPass, value: settings.highPassCutoff)
         setAUParam(kLowPassParam_CutoffFrequency, on: lowPass, value: settings.lowPassCutoff)
@@ -598,8 +627,8 @@ final class TapPipeline {
         engine.connect(sourceNode, to: equalizer, format: format)
         engine.connect(equalizer, to: highPass, format: format)
         engine.connect(highPass, to: lowPass, format: format)
-        engine.connect(lowPass, to: reverb, format: format)
-        engine.connect(reverb, to: limiter, format: format)
+        engine.connect(lowPass, to: reverbNode, format: format)
+        engine.connect(reverbNode, to: limiter, format: format)
         engine.connect(limiter, to: engine.mainMixerNode, format: format)
         engine.connect(engine.mainMixerNode, to: engine.outputNode, format: format)
 

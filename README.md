@@ -1,4 +1,8 @@
-# Apple Visualized Music
+# AVM SuperMassive
+
+**This is the `avm-supermassive` branch of Apple Visualized Music (AVM).** It's identical to the base app except for the Reverb module: if [Valhalla Supermassive](https://valhalladsp.com/products/supermassive/) (free) is installed on your Mac as a system Audio Unit, AVM SuperMassive loads it in place of the stock AUReverb2 reverb and drives it through the same five "Space" presets. Nothing is bundled — Supermassive isn't redistributable (see `Decisions.md`), so you install your own free copy and AVM SuperMassive just hosts it. If it isn't installed, this app behaves exactly like base AVM: the stock reverb, unchanged.
+
+It ships as a separate app (`AVM SuperMassive.app`, bundle ID `com.yourname.avm-supermassive`) so it keeps its own permissions and settings, side by side with a base AVM install. Everything below is the base app's own README; see **Supermassive reverb** just under Features for what this branch adds.
 
 Apple Visualized Music (AVM) is a full-window music visualizer for Apple Music on macOS. It paints the current song's album-cover colours across the window, as soft bokeh, merging water drops or rain ripples that react to the kick drum, the hi-hats and the song's loudness. Hide the controls and it becomes a full-screen player with the cover, song and artist. It can also play Music through live effects: a 10-band equalizer, a low-cut/high-cut filter and a reverb, on your speakers or headphones in real time. Music is the only supported app for now.
 
@@ -6,6 +10,7 @@ AVM is a small SwiftUI app with a main window and a menu bar control. It uses Co
 
 ## Features
 
+- **Supermassive reverb (this branch only).** If [Valhalla Supermassive](https://valhalladsp.com/products/supermassive/) is installed, the Reverb module loads it instead of the stock AUReverb2, and the Room/Chamber/Plate/Hall/Cathedral presets drive its Mode, Width, Delay, Warp, Feedback, Density, Mod Rate/Depth and EQ cuts instead of an AVAudioUnitReverb preset. The Mix slider becomes Supermassive's own Mix. A caption under the Reverb module says which one is actually running. An **All Supermassive controls** disclosure under that shows every parameter the plugin itself reports — a knob for anything continuous, a picker for anything discrete (like Mode) — for tuning it by hand instead of relying on the five presets. Supermassive's parameters are found by name at runtime, not a hardcoded address (Valhalla doesn't publish those), so a Supermassive update that renames a control degrades gracefully — `./build.sh debug` logs exactly which name didn't match, if any, and also logs the plugin's real parameter and factory-preset names on load. See `docs/ARCHITECTURE.md` and `Decisions.md` for how and why.
 - **Apple Music only.** Apple Visualized Music taps Music's audio and nothing else. It follows Music if it starts a new audio process while running.
 - **Three effects, each with its own on/off switch:**
   - **Equalizer.** 10 bands (31 Hz to 16 kHz), ±12 dB each, with all 22 of Apple Music's EQ presets (Flat, Acoustic, Bass Booster, … Vocal Booster). Moving a slider switches the preset menu to **Custom**.
@@ -135,6 +140,8 @@ Apple Visualized Music never records your microphone. Some headsets, such as Air
 | "Open Music first." | Music isn't running. |
 | The tank stays blue-grey | It has no cover colours: Automation is denied (the window's footer says so), the song has no artwork anywhere, or Music isn't playing. Check `./build.sh debug` for `Artwork:` lines. |
 | The tank doesn't follow the music | Loudness only drives it while the effects switch is on. With the effects off it rests at a steady tone by design. |
+| Reverb caption says "Using the built-in reverb" | Valhalla Supermassive isn't installed, or wasn't found by name among installed Audio Units. Install it free from [valhalladsp.com](https://valhalladsp.com/products/supermassive/), then turn Reverb off and on again (or restart the app) to re-scan. |
+| `./build.sh debug` logs "Supermassive: no parameter matching \"...\"" | Supermassive exposes a control under a different display name than this branch expects. That one control is left at its current value; everything else still applies. Open `Sources/AVM/SupermassiveReverb.swift` and adjust the matching string named in the log line. |
 
 To read the logs from a copy that's already running:
 

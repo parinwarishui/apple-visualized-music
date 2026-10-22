@@ -13,11 +13,11 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-APP_DISPLAY_NAME="Apple Visualized Music"
+APP_DISPLAY_NAME="AVM SuperMassive"
 # Must match Package.swift's executable target name and Info.plist's
 # CFBundleExecutable — LaunchServices looks for Contents/MacOS/<that name> exactly.
 EXECUTABLE_NAME="AppleVisualizedMusic"
-BUNDLE_ID="com.yourname.apple-visualized-music"
+BUNDLE_ID="com.yourname.avm-supermassive"
 BUILD_DIR="build"
 APP_BUNDLE="$BUILD_DIR/$APP_DISPLAY_NAME.app"
 ENTITLEMENTS="AVM.entitlements"

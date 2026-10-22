@@ -12,13 +12,11 @@ import Observation
 import SwiftUI
 
 enum ReverbPresets {
-    static let all: [(name: String, value: AVAudioUnitReverbPreset)] = [
-        ("Room", .mediumRoom),
-        ("Chamber", .mediumChamber),
-        ("Plate", .plate),
-        ("Hall", .largeHall),
-        ("Cathedral", .cathedral)
-    ]
+    /// SuperMassive branch: these now drive Supermassive's Mode + parameters
+    /// (SupermassiveReverb.swift) when it's installed, and the same five
+    /// AVAudioUnitReverb presets as before when it isn't.
+    static let all: [(name: String, value: SupermassiveReverbPreset)] =
+        SupermassiveReverbPreset.allCases.map { ($0.rawValue, $0) }
 }
 
 /// Apple Music's built-in EQ presets (Music › Window › Equalizer). Apple doesn't
@@ -74,6 +72,13 @@ final class AVMController {
 
     private(set) var phase: Phase = .idle
     private(set) var outputName = ""
+    /// SuperMassive branch: whether the running pipeline is actually using
+    /// Supermassive, vs. the stock reverb fallback (Supermassive not found
+    /// among installed Audio Units). False while idle/starting.
+    private(set) var supermassiveActive = false
+    /// Every control Supermassive itself reports, for the "full control" rack
+    /// in Views.swift. Empty whenever supermassiveActive is false.
+    private(set) var supermassiveControls: [SupermassiveControl] = []
     private(set) var permission: AudioCapturePermission.Status = .unknown
     var errorMessage: String?
     var showPermissionHelp = false
@@ -86,7 +91,7 @@ final class AVMController {
         }
     }
 
-    var preset: AVAudioUnitReverbPreset = AVMController.savedPreset() {
+    var preset: SupermassiveReverbPreset = AVMController.savedPreset() {
         didSet {
             let value = preset
             UserDefaults.standard.set(value.rawValue, forKey: Keys.preset)
@@ -194,11 +199,13 @@ final class AVMController {
         observeSourceQuitting()
     }
 
-    /// Only presets the picker offers. Imported Objective-C enums accept any raw
-    /// value, so a hand-edited preference could otherwise reach the reverb unit.
-    private static func savedPreset() -> AVAudioUnitReverbPreset {
-        let raw = UserDefaults.standard.object(forKey: Keys.preset) as? Int
-        return ReverbPresets.all.first { $0.value.rawValue == raw }?.value ?? .largeHall
+    /// Only presets the picker offers. A hand-edited or stale preference (e.g.
+    /// from the base AVM app's Int-keyed preset, before this branch switched to
+    /// a String-backed enum) falls back to Hall rather than reaching either
+    /// reverb engine.
+    private static func savedPreset() -> SupermassiveReverbPreset {
+        let raw = UserDefaults.standard.string(forKey: Keys.preset)
+        return SupermassiveReverbPreset.allCases.first { $0.rawValue == raw } ?? .hall
     }
 
     /// The saved mix, clamped to 0...100. Falls back to 35 if it's missing or not a number.
@@ -271,6 +278,8 @@ final class AVMController {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.generation == current else { return }
                 self.phase = .idle
+                self.supermassiveActive = false
+                self.supermassiveControls = []
             }
         }
     }
@@ -329,6 +338,8 @@ final class AVMController {
                     self.currentOutputID = outputID
                     self.tappedObjects = tapped
                     self.startedAt = Date()
+                    self.supermassiveActive = pipeline.usingSupermassive
+                    self.supermassiveControls = pipeline.supermassiveControls
                     self.phase = .running
                     self.startWatchdog()
                 }

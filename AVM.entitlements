@@ -15,5 +15,15 @@
          The user still has to approve it (NSAppleEventsUsageDescription). -->
     <key>com.apple.security.automation.apple-events</key>
     <true/>
+    <!-- SuperMassive branch only: AVM optionally loads Valhalla Supermassive (or any
+         installed Audio Unit named "Supermassive") in place of the stock reverb. The
+         hardened runtime's library validation otherwise refuses to load any code not
+         signed by our own Team ID, which is every third-party plugin. This is a
+         deliberate, scoped trade-off against that protection -- it lets AVM load
+         ANY signed code, not just Supermassive, so don't carry it into a build that
+         doesn't host third-party plugins. Nothing else changes: without this, AVM
+         falls back to the stock reverb exactly as before. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
 </dict>
 </plist>
