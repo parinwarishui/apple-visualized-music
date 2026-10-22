@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>AVM SuperMassive</string>
+    <string>Apple Visualized Music</string>
     <key>CFBundleDisplayName</key>
-    <string>AVM SuperMassive</string>
+    <string>Apple Visualized Music</string>
     <key>CFBundleIdentifier</key>
-    <string>com.yourname.avm-supermassive</string>
+    <string>com.yourname.apple-visualized-music</string>
     <key>CFBundleExecutable</key>
     <string>AppleVisualizedMusic</string>
     <key>CFBundlePackageType</key>
@@ -22,15 +22,15 @@
     <true/>
     <!-- Shown in the one-time system audio-capture permission prompt. -->
     <key>NSAudioCaptureUsageDescription</key>
-    <string>AVM SuperMassive captures Music's audio so it can add live effects (optionally through your installed Valhalla Supermassive) and make the visualizer react to the song.</string>
+    <string>Apple Visualized Music captures Music's audio so it can add live effects and make the visualizer react to the song.</string>
     <!-- Fallback only: Apple Visualized Music never records the mic, but some headsets (AirPods)
          expose a mic on the same device. If macOS counts that as mic use and this key
          is missing, it can terminate the app instead of asking. -->
     <!-- Shown in the one-time "wants to control Music" prompt. One approval covers
          reading the track and artwork and the player controls. -->
     <key>NSAppleEventsUsageDescription</key>
-    <string>AVM SuperMassive reads the current song and its album artwork from Music, and sends play, pause, skip, seek, shuffle and repeat commands when you use its player controls.</string>
+    <string>Apple Visualized Music reads the current song and its album artwork from Music, and sends play, pause, skip, seek, shuffle and repeat commands when you use its player controls.</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>AVM SuperMassive doesn't record your microphone. macOS asks because your headphones' mic is part of the same audio device.</string>
+    <string>Apple Visualized Music doesn't record your microphone. macOS asks because your headphones' mic is part of the same audio device.</string>
 </dict>
 </plist>

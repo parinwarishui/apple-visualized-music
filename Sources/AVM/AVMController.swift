@@ -9,14 +9,43 @@ import AppKit
 import AVFoundation
 import CoreAudio
 import Observation
+import ReverbDSP
 import SwiftUI
 
+/// AVM's five "Space" presets. Each is just three numbers — decay (RT60),
+/// pre-delay and tone — fed to ReverbDSP's impulse-response synthesizer, which
+/// builds a stereo room response from them (early reflections, a decorrelated
+/// diffuse tail, air/wall absorption) rather than picking a canned algorithm or
+/// a hosted plugin's mode. Replaces the old AVAudioUnitReverb factory presets
+/// and the avm-supermassive branch's Mode/parameter mapping — see Decisions.md.
+///
+/// Hall and Cathedral reuse the reverb-room sibling project's own "Concert
+/// Hall" and "Cathedral" room numbers directly, since they're already tuned.
+/// Room, Chamber and Plate are AVM's own: Room and Plate short and bright with
+/// little pre-delay (a plate's reflections arrive almost at once; a room is
+/// just small), Chamber a size up from Room but darker and with more pre-delay.
+/// Not yet confirmed by ear — a first pass, same standing caveat as everything
+/// else in this app's effects chain.
+enum AVMReverbSpace: String, CaseIterable, Hashable {
+    case room = "Room"
+    case chamber = "Chamber"
+    case plate = "Plate"
+    case hall = "Hall"
+    case cathedral = "Cathedral"
+
+    var shape: ReverbShape {
+        switch self {
+        case .room:      return ReverbShape(decay: 0.6, preDelay: 0.008, tone: 0.65)
+        case .chamber:   return ReverbShape(decay: 1.4, preDelay: 0.016, tone: 0.5)
+        case .plate:     return ReverbShape(decay: 1.8, preDelay: 0.004, tone: 0.78)
+        case .hall:      return ReverbShape(decay: 2.6, preDelay: 0.025, tone: 0.6)
+        case .cathedral: return ReverbShape(decay: 7.5, preDelay: 0.060, tone: 0.45)
+        }
+    }
+}
+
 enum ReverbPresets {
-    /// SuperMassive branch: these now drive Supermassive's Mode + parameters
-    /// (SupermassiveReverb.swift) when it's installed, and the same five
-    /// AVAudioUnitReverb presets as before when it isn't.
-    static let all: [(name: String, value: SupermassiveReverbPreset)] =
-        SupermassiveReverbPreset.allCases.map { ($0.rawValue, $0) }
+    static let all: [(name: String, value: AVMReverbSpace)] = AVMReverbSpace.allCases.map { ($0.rawValue, $0) }
 }
 
 /// Apple Music's built-in EQ presets (Music › Window › Equalizer). Apple doesn't
@@ -72,13 +101,6 @@ final class AVMController {
 
     private(set) var phase: Phase = .idle
     private(set) var outputName = ""
-    /// SuperMassive branch: whether the running pipeline is actually using
-    /// Supermassive, vs. the stock reverb fallback (Supermassive not found
-    /// among installed Audio Units). False while idle/starting.
-    private(set) var supermassiveActive = false
-    /// Every control Supermassive itself reports, for the "full control" rack
-    /// in Views.swift. Empty whenever supermassiveActive is false.
-    private(set) var supermassiveControls: [SupermassiveControl] = []
     private(set) var permission: AudioCapturePermission.Status = .unknown
     var errorMessage: String?
     var showPermissionHelp = false
@@ -91,7 +113,7 @@ final class AVMController {
         }
     }
 
-    var preset: SupermassiveReverbPreset = AVMController.savedPreset() {
+    var preset: AVMReverbSpace = AVMController.savedPreset() {
         didSet {
             let value = preset
             UserDefaults.standard.set(value.rawValue, forKey: Keys.preset)
@@ -199,13 +221,11 @@ final class AVMController {
         observeSourceQuitting()
     }
 
-    /// Only presets the picker offers. A hand-edited or stale preference (e.g.
-    /// from the base AVM app's Int-keyed preset, before this branch switched to
-    /// a String-backed enum) falls back to Hall rather than reaching either
-    /// reverb engine.
-    private static func savedPreset() -> SupermassiveReverbPreset {
+    /// Only presets the picker offers. A hand-edited or stale preference falls
+    /// back to Hall rather than crashing or reaching the reverb with a bad shape.
+    private static func savedPreset() -> AVMReverbSpace {
         let raw = UserDefaults.standard.string(forKey: Keys.preset)
-        return SupermassiveReverbPreset.allCases.first { $0.rawValue == raw } ?? .hall
+        return raw.flatMap(AVMReverbSpace.init(rawValue:)) ?? .hall
     }
 
     /// The saved mix, clamped to 0...100. Falls back to 35 if it's missing or not a number.
@@ -278,8 +298,6 @@ final class AVMController {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.generation == current else { return }
                 self.phase = .idle
-                self.supermassiveActive = false
-                self.supermassiveControls = []
             }
         }
     }
@@ -338,8 +356,6 @@ final class AVMController {
                     self.currentOutputID = outputID
                     self.tappedObjects = tapped
                     self.startedAt = Date()
-                    self.supermassiveActive = pipeline.usingSupermassive
-                    self.supermassiveControls = pipeline.supermassiveControls
                     self.phase = .running
                     self.startWatchdog()
                 }
@@ -464,7 +480,9 @@ final class AVMController {
 
     // MARK: Health check
 
-    /// Runs every 0.5 s while reverb is on. Two checks:
+    /// Runs every 0.5 s while reverb is on. Three things:
+    /// - Frees any impulse response the reverb's audio thread has finished with
+    ///   (ReverbProcessor.collectGarbage), same as reverb-room's own tick.
     /// - The engine keeps failing to render (Renderer plays the dry tap meanwhile): stop.
     /// - The source is actively playing but the tap has delivered nothing but zeros
     ///   for a few seconds, which almost always means capture permission is missing:
@@ -487,6 +505,7 @@ final class AVMController {
 
     private func checkHealth() {
         guard phase == .running, let startedAt else { return }
+        pipeline?.collectGarbage()
         if meter.renderFailed {
             dlog("Health check: the reverb engine keeps failing to render — stopping")
             stop()

@@ -84,12 +84,11 @@ flowchart LR
     Src[AVAudioSourceNode<br/>tap samples] --> EQ[AVAudioUnitEQ<br/>10 bands]
     EQ --> HP[High-pass<br/>kAudioUnitSubType_HighPassFilter]
     HP --> LP[Low-pass<br/>kAudioUnitSubType_LowPassFilter]
-    LP --> Rev[AVAudioUnitReverb]
-    Rev --> Lim[Peak limiter<br/>kAudioUnitSubType_PeakLimiter]
-    Lim --> Mix[mainMixerNode] --> OutN[outputNode]
+    LP --> Mix[mainMixerNode] --> OutN[outputNode]
+    Mix -.->|Renderer, after render| Rev[ReverbProcessor<br/>ReverbDSP]
 ```
 
-The order is deliberate: shape the tone first (EQ), then cut the extremes (filter), then add the room last (reverb), so the reverb tail is built from the already-shaped signal. The limiter is a fixed safety stage, not a user control. It holds peaks near full scale before the hard clip in `Renderer`. Its decay is set to the unit's maximum, 60 ms. Apple's 24 ms default is shorter than one cycle of a 31 Hz bass note, so the limiter would change gain inside each cycle and distort the bass.
+The order is deliberate: shape the tone first (EQ), then cut the extremes (filter), then add the room last. The room is added outside the `AVAudioEngine` graph: `Renderer.process` calls `ReverbProcessor.process(left:right:frames:)` directly on the engine's already-rendered output, in place, right before the hard clip. ReverbProcessor (the `ReverbDSP` module, ported from the reverb-room sibling project) is a from-scratch convolution reverb — a synthesized stereo impulse response per room, a partitioned-FFT convolver, a reverb-return EQ, true stereo crossfeed, a de-ess/transient-soften send conditioner, BS.1770 loudness matching and its own lookahead true-peak limiter as its last stage — so there is no separate Apple peak-limiter node in the graph any more; ReverbProcessor's limiter is the one that now sits before `Renderer`'s hard clip. See `Sources/ReverbDSP/ReverbProcessor.swift`.
 
 ### EQ headroom (automatic preamp)
 
@@ -99,23 +98,11 @@ Music's EQ output stays in floating point until macOS applies the volume, so a b
 | --- | --- | --- | --- | --- |
 | Equalizer | 10 vertical sliders + preset menu | `AVAudioUnitEQ(numberOfBands: 10)` | Bands at `EqualizerBands.frequencies` (31, 62, 125, 250, 500 Hz, 1, 2, 4, 8, 16 kHz). Each band `.parametric`, bandwidth 1 octave, gain −12…+12 dB | Off, flat |
 | Filter | Low cut, High cut sliders | Two `AVAudioUnitEffect`s wrapping Apple's high-pass and low-pass units | `kHipassParam_CutoffFrequency` 20 Hz–2 kHz, `kLowPassParam_CutoffFrequency` 200 Hz–20 kHz | Off, 20 Hz / 20 kHz |
-| Reverb | Space segmented control, Mix slider | `AVAudioUnitReverb`, or Valhalla Supermassive via a generic `AVAudioUnit` if installed (SuperMassive branch — see below) | `ReverbPresets.all` (Room, Chamber, Plate, Hall, Cathedral), `wetDryMix` 0–100% | On, Hall, 35% |
+| Reverb | Space segmented control, Mix slider | `ReverbProcessor` (`ReverbDSP`, applied in `Renderer`, not a graph node) | `ReverbPresets.all` (Room, Chamber, Plate, Hall, Cathedral — each an `AVMReverbSpace.shape`), `wetDryMix` 0–100% | On, Hall, 35% |
 
 Every node stays in the graph for the life of the pipeline. A module's switch sets `kAudioUnitProperty_BypassEffect` on its unit (`setBypass(_:on:)`), and the Filter switch bypasses both of its units. This avoids changing the graph while the engine is rendering in real time. Parameter changes go through the per-effect setters on `TapPipeline` (`setEQGains`, `setLowPassCutoff`, `setPreset`, …), called on the work queue. Setting an Audio Unit property or parameter from outside the render thread is the standard host pattern; the unit synchronizes internally.
 
 `EffectsSettings` bundles every effect value so a fresh pipeline starts with the current settings. After that, only the individual setters are used.
-
-### Supermassive reverb (SuperMassive branch)
-
-`TapPipeline.buildEngine` calls `SupermassiveReverb.locate()` on every build (a fresh `TapPipeline` is already created on every start/rebuild — see Threading and lifecycle below — so this isn't a new per-rebuild cost, just an extra step in one that already happens). `locate()` searches `AVAudioUnitComponentManager.shared().components(matching:)` for an installed effect Audio Unit whose name contains "Supermassive" (a wildcard `AudioComponentDescription`, not a hardcoded subtype — Valhalla doesn't publish one, and this is resilient to a version bump changing it), then instantiates it with `AVAudioUnit.instantiate(with:options:completionHandler:)`, blocking the work queue briefly on a semaphore since that call is asynchronous. If nothing matches, or instantiation fails or times out (5 s), `supermassive` stays `nil` and `buildEngine` attaches and connects the stock `reverb` node exactly as before — this is the only fallback path, and it's silent except for one `dlog` line.
-
-When Supermassive loads, `reverbNode` (whichever of `reverb` / `supermassive.unit` is live) takes the stock reverb's place in the graph, and `TapPipeline`'s reverb setters (`setWetDryMix`, `setPreset`, `setReverbEnabled`) branch on `supermassive != nil` to call its methods instead of the stock node's. `SupermassiveReverb` (in `SupermassiveReverb.swift`) finds every one of Supermassive's controls (Mix, Mode, Width, Delay, Warp, Feedback, Density, Mod Rate, Mod Depth, EQ High/Low Cut) by matching its `AUParameterTree` `displayName` (case-insensitive substring) rather than a hardcoded parameter address, since Valhalla doesn't publish those and a substring match survives a version renumbering them. Every numeric control is set as a 0...1 fraction of that parameter's own live `minValue...maxValue`, not an absolute number, for the same reason. `SupermassiveReverbPreset` (replacing `AVAudioUnitReverbPreset` throughout the codebase) carries, per preset, which of Supermassive's eight Modes to select (by matching the Mode parameter's `valueStrings`) and the nine fractions — a first tuning pass by Valhalla's own written descriptions of each Mode, not yet confirmed by ear against the real plugin. A missing parameter name is logged once per pipeline run (`SupermassiveReverb.warnMissing`) and otherwise left alone, so one renamed control doesn't block the rest of the preset.
-
-Bypass uses `AUAudioUnit.shouldBypassEffect`, not the classic `kAudioUnitProperty_BypassEffect` the stock units use elsewhere in this file: that property is bridged for both AUv2 and AUv3 hosts by AVAudioEngine, but a native AUv3 plugin isn't guaranteed to implement the legacy one.
-
-**Full control UI.** `SupermassiveControl` (in `SupermassiveReverb.swift`) wraps every `AUParameter` Supermassive's tree reports, keyed by `AUParameterAddress` (not display name, which isn't guaranteed unique). `TapPipeline.supermassiveControls` and `AVMController.supermassiveControls` pass that list up to `SupermassiveRackView` (`SupermassiveControls.swift`), which renders a `Picker` for anything with `valueStrings` (discrete/indexed, e.g. Mode) and a custom circular `KnobControl` for everything else, normalizing each parameter's real `minValue...maxValue` to 0...1 for the knob and back on write. It's shown in a collapsed `DisclosureGroup` under the normal Space/Mix controls in `Views.swift`, so the five presets stay the default path and this is for tuning by hand. `AUParameter.value` is safe to read and write from any thread (it's built for live automation), so this binds to it directly from the main thread rather than routing through `TapPipeline`'s work queue the way the other, non-thread-safe setters in this file do.
-
-**Why this exists, and why it isn't bundled:** Valhalla's and TAL's terms both forbid redistributing their plugins inside another program, and Logic/GarageBand's built-in reverbs (ChromaVerb, SilverVerb) aren't real system-wide Audio Units at all — they're compiled into those apps and can't be loaded by any other host. Hosting a plugin the user installs themselves sidesteps both problems; see `Decisions.md` for the dead ends ruled out first. This needs `com.apple.security.cs.disable-library-validation` in `AVM.entitlements` — the hardened runtime otherwise refuses to load any code not signed by AVM's own Team ID, which is every third-party plugin. That entitlement is scoped to this branch for exactly that reason; it shouldn't be carried into a build that doesn't host third-party plugins.
 
 ### EQ presets
 
@@ -236,13 +223,13 @@ Effect changes (switches, sliders, presets) **don't** cause a rebuild. They're a
 Settings are stored in `UserDefaults` (standard suite) and written from each property's `didSet`. Saved values are validated on load, because a hand-edited preference could otherwise reach an Audio Unit:
 
 - Numbers are clamped to their control's range and fall back to the default if they're missing or not a number (`savedFloat`, and `savedMix` for the reverb mix).
-- The reverb preset must be one of the five in `ReverbPresets.all`, because imported Objective-C enums accept any raw value.
+- The reverb preset must be one of the five in `ReverbPresets.all`; a missing or unrecognized saved value falls back to Hall (`AVMController.savedPreset`).
 - `eqGains` must be exactly 10 numbers. Each is clamped to ±12 dB. Anything else falls back to flat.
 
 | Key | Default |
 | --- | --- |
 | `reverbEnabled` | `true` |
-| `reverbPreset` | `.largeHall` (shown as "Hall") |
+| `reverbPreset` | `.hall` (shown as "Hall") |
 | `wetDryMix` | 35 |
 | `filterEnabled` | `false` |
 | `highPassCutoff` | 20 (Hz) |
@@ -413,8 +400,7 @@ flowchart LR
 
 | Change | Location |
 | --- | --- |
-| Add or rename a reverb preset | `ReverbPresets.all` in `AVMController.swift`, plus its Mode/fractions in `SupermassiveReverbPreset` (`SupermassiveReverb.swift`) |
-| Retune a Supermassive preset, or fix a "no parameter matching" log line | `SupermassiveReverbPreset.mode`/`.fractions` and the `named:` search strings in `SupermassiveReverb.swift` |
+| Add or rename a reverb preset | `ReverbPresets.all` in `AVMController.swift` |
 | Add or change an EQ preset | `EqualizerPresets.all` in `AVMController.swift` (10 gains, in band order) |
 | Change the EQ bands | `EqualizerBands.frequencies` in `AudioPipeline.swift`. Changing the count resets saved gains to flat and invalidates the presets |
 | Add an effect | `AudioPipeline.swift`: a node on `TapPipeline`, attach and connect it in `buildEngine`, a field on `EffectsSettings`, setters. `AVMController.swift`: persisted properties whose `didSet` calls the setters, and pass them into `EffectsSettings` in `buildPipeline`. `Views.swift`: an `EffectModuleBox` in `effectsRack` (and grow the fixed window height in `AVMApp.swift` if needed) |

@@ -240,24 +240,6 @@ struct MainWindow: View {
                         ValueSlider(value: $controller.wetDryMix, range: 0...100, unit: "%")
                     }
 
-                    if controller.phase == .running {
-                        Text(controller.supermassiveActive
-                             ? "Using Valhalla Supermassive"
-                             : "Using the built-in reverb — install Valhalla Supermassive (free, valhalladsp.com) for this one")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    // Full manual control over every parameter Supermassive
-                    // itself reports — the five Space presets above still work
-                    // and are the default; this is for dialling it in by hand.
-                    if controller.supermassiveActive && !controller.supermassiveControls.isEmpty {
-                        DisclosureGroup("All Supermassive controls") {
-                            SupermassiveRackView(controls: controller.supermassiveControls)
-                                .padding(.top, 6)
-                        }
-                        .font(.caption)
-                    }
                 }
 
                 EffectModuleBox(name: "Equalizer", isEnabled: $controller.eqEnabled) {

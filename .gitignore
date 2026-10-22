@@ -4,3 +4,6 @@ build/
 *.xcodeproj
 .DS_Store
 .claude
+# git worktrees live as siblings under the repo root (e.g. .worktree-<name>);
+# never let their contents get tracked by a `git add -A` run from here.
+.worktree-*/

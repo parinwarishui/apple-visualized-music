@@ -10,7 +10,14 @@
 //                        │  IOProc (real-time)
 //                        ▼
 //    AVAudioEngine in manual rendering mode:
-//      source ─► 10-band EQ ─► high-pass ─► low-pass ─► reverb ─► peak limiter ─► mixer
+//      source ─► 10-band EQ ─► high-pass ─► low-pass ─► mixer
+//                        │
+//                        ▼
+//    ReverbProcessor (ReverbDSP, ported from the reverb-room sibling project):
+//      convolution reverb built from a synthesized room response, a reverb-return
+//      EQ, true stereo crossfeed, a de-ess/transient-soften send conditioner,
+//      BS.1770 loudness matching and a lookahead true-peak limiter — applied on
+//      the engine's already-rendered output, in Renderer, not as a graph node.
 //                        │
 //                        ▼
 //    aggregate output stream ─► your speakers / AirPods
@@ -20,6 +27,7 @@ import AVFoundation
 import AudioToolbox
 import CoreAudio
 import AVMAtomics
+import ReverbDSP
 
 /// ISO-standard 10-band graphic EQ center frequencies.
 enum EqualizerBands {
@@ -73,7 +81,7 @@ enum EqualizerBands {
 struct EffectsSettings {
     var reverbEnabled: Bool
     var wetDryMix: Float
-    var preset: SupermassiveReverbPreset
+    var preset: AVMReverbSpace
 
     var filterEnabled: Bool
     var highPassCutoff: Float
@@ -139,8 +147,10 @@ final class Renderer {
     private let source: SourceContext
     private let meter: Meter
     private var bands: BandSplitter      // real-time thread only
+    private let reverb: ReverbProcessor
 
-    init?(engine: AVAudioEngine, format: AVAudioFormat, maxFrames: Int, source: SourceContext, meter: Meter) {
+    init?(engine: AVAudioEngine, format: AVAudioFormat, maxFrames: Int, source: SourceContext,
+          meter: Meter, reverb: ReverbProcessor) {
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(maxFrames)),
               let channels = buffer.floatChannelData else { return nil }
         self.renderBlock = engine.manualRenderingBlock
@@ -152,6 +162,7 @@ final class Renderer {
         self.source = source
         self.meter = meter
         self.bands = BandSplitter(sampleRate: format.sampleRate)
+        self.reverb = reverb
     }
 
     /// Consecutive failed render calls before the health check is told to stop
@@ -263,6 +274,11 @@ final class Renderer {
                let wetL = rendered[0].mData?.assumingMemoryBound(to: Float.self),
                let wetR = rendered[1].mData?.assumingMemoryBound(to: Float.self) {
                 renderFailures = 0
+                // Reverb (convolution, return EQ, loudness match, lookahead limiter)
+                // runs here, on the engine's already EQ'd/filtered output, rather than
+                // as an AVAudioEngine node — it owns the signal's last stage, including
+                // the final limiting, so no separate Apple limiter node is needed.
+                reverb.process(left: wetL, right: wetR, frames: n)
                 for f in 0..<n {
                     Self.write(wetL[f], wetR[f], frame: done + f, left: left, right: right)
                 }
@@ -343,8 +359,13 @@ final class TapPipeline {
     private var procID: AudioDeviceIOProcID?
     private var engine: AVAudioEngine?
     private var renderer: Renderer?
-    private let reverb = AVAudioUnitReverb()   // fallback when Supermassive isn't installed
-    private var supermassive: SupermassiveReverb?
+    private var reverbProcessor: ReverbProcessor?
+    /// The user's mix slider (0...100) and the module's on/off switch, combined
+    /// into the 0...1 amount actually sent to `reverbProcessor.setMix`. Kept here
+    /// (not read back from the processor) so either setter can recompute it
+    /// without the other.
+    private var reverbMixPercent: Float = 35
+    private var reverbIsEnabled = true
     private let equalizer = AVAudioUnitEQ(numberOfBands: EqualizerBands.frequencies.count)
     private let highPass = AVAudioUnitEffect(audioComponentDescription: AudioComponentDescription(
         componentType: kAudioUnitType_Effect,
@@ -380,25 +401,28 @@ final class TapPipeline {
 
     // All setters below run on the work queue while the IO thread renders. Setting
     // an Audio Unit property or parameter from outside the render thread is the
-    // standard host pattern (the AU synchronizes internally); none of these units
-    // have a real-time-safe alternative.
-
-    /// Whether Supermassive loaded for the running pipeline (vs. the stock
-    /// reverb fallback). Read by the controller to show a status line.
-    var usingSupermassive: Bool { supermassive != nil }
-
-    /// Every control Supermassive itself reports, for the UI's "full control"
-    /// rack. Empty when the stock reverb is in use (nothing to show).
-    var supermassiveControls: [SupermassiveControl] { supermassive?.allControls ?? [] }
+    // standard host pattern (the AU synchronizes internally); ReverbProcessor's own
+    // control methods (setMix, submit) are documented safe from any thread, same
+    // contract.
 
     func setWetDryMix(_ value: Float) {
-        if let supermassive { supermassive.setMix(value) } else { reverb.wetDryMix = value }
+        reverbMixPercent = value
+        reverbProcessor?.setMix(reverbIsEnabled ? value / 100 : 0)
     }
-    func setPreset(_ preset: SupermassiveReverbPreset) {
-        if let supermassive { supermassive.apply(preset) } else { reverb.loadFactoryPreset(preset.stockFallback) }
+    func setPreset(_ preset: AVMReverbSpace) {
+        guard let reverbProcessor else { return }
+        // Building the response is slow (tens of ms for a long room); this already
+        // runs on TapPipeline's work queue, never the real-time thread.
+        reverbProcessor.submit(reverbProcessor.makeSpectra(preset.shape))
     }
     func setReverbEnabled(_ enabled: Bool) {
-        if let supermassive { supermassive.setBypass(!enabled) } else { setBypass(!enabled, on: reverb) }
+        reverbIsEnabled = enabled
+        reverbProcessor?.setMix(enabled ? reverbMixPercent / 100 : 0)
+    }
+    /// Frees the impulse response the audio thread has finished with. Called from
+    /// the controller's periodic health check, same as reverb-room's own tick.
+    func collectGarbage() {
+        reverbProcessor?.collectGarbage()
     }
 
     func setHighPassCutoff(_ value: Float) {
@@ -569,40 +593,23 @@ final class TapPipeline {
             return noErr
         }
 
-        // Catches peaks before the hard clip in Renderer, so loud passages (or a
-        // feedback loop with another loopback app) are held near full scale instead
-        // of distorting.
-        let limiter = AVAudioUnitEffect(audioComponentDescription: AudioComponentDescription(
-            componentType: kAudioUnitType_Effect,
-            componentSubType: kAudioUnitSubType_PeakLimiter,
-            componentManufacturer: kAudioUnitManufacturer_Apple,
-            componentFlags: 0,
-            componentFlagsMask: 0))
-
-        // Look for an installed Supermassive on every build, same as every other
-        // node here is freshly constructed per build (see buildPipeline in
-        // AVMController: a fresh TapPipeline is made on every start/rebuild, not
-        // reused). If it's not installed, `supermassive` stays nil and the stock
-        // `reverb` node below is used exactly as before.
-        supermassive = SupermassiveReverb.locate()
-        let reverbNode: AVAudioUnit = supermassive?.unit ?? reverb
+        // Builds the reverb's convolution engine for this pipeline's real sample
+        // rate and loads the chosen room before any audio flows. No separate Apple
+        // peak limiter node: ReverbProcessor carries its own lookahead true-peak
+        // limiter as its last internal stage (see ReverbProcessor.swift), which is
+        // the one that now sits before Renderer's hard clip.
+        reverbMixPercent = settings.wetDryMix
+        reverbIsEnabled = settings.reverbEnabled
+        let reverbProcessor = ReverbProcessor(sampleRate: sampleRate,
+                                              mix: reverbIsEnabled ? reverbMixPercent / 100 : 0,
+                                              nextRoom: false)
+        reverbProcessor.submit(reverbProcessor.makeSpectra(settings.preset.shape))
+        self.reverbProcessor = reverbProcessor
 
         engine.attach(sourceNode)
         engine.attach(equalizer)
         engine.attach(highPass)
         engine.attach(lowPass)
-        engine.attach(reverbNode)
-        engine.attach(limiter)
-
-        if let supermassive {
-            supermassive.apply(settings.preset)
-            supermassive.setMix(settings.wetDryMix)
-            supermassive.setBypass(!settings.reverbEnabled)
-        } else {
-            reverb.loadFactoryPreset(settings.preset.stockFallback)
-            reverb.wetDryMix = settings.wetDryMix
-            setBypass(!settings.reverbEnabled, on: reverb)
-        }
 
         setAUParam(kHipassParam_CutoffFrequency, on: highPass, value: settings.highPassCutoff)
         setAUParam(kLowPassParam_CutoffFrequency, on: lowPass, value: settings.lowPassCutoff)
@@ -619,17 +626,10 @@ final class TapPipeline {
         setEQGains(settings.eqGains)
         setBypass(!settings.eqEnabled, on: equalizer)
 
-        // Apple's default 24 ms decay is shorter than one cycle of a 31 Hz bass
-        // note, so whenever the limiter engaged it changed gain inside each bass
-        // cycle and audibly distorted it. Use the slowest decay the unit allows.
-        setAUParam(kLimiterParam_DecayTime, on: limiter, value: 0.06)
-
         engine.connect(sourceNode, to: equalizer, format: format)
         engine.connect(equalizer, to: highPass, format: format)
         engine.connect(highPass, to: lowPass, format: format)
-        engine.connect(lowPass, to: reverbNode, format: format)
-        engine.connect(reverbNode, to: limiter, format: format)
-        engine.connect(limiter, to: engine.mainMixerNode, format: format)
+        engine.connect(lowPass, to: engine.mainMixerNode, format: format)
         engine.connect(engine.mainMixerNode, to: engine.outputNode, format: format)
 
         engine.prepare()
@@ -640,7 +640,7 @@ final class TapPipeline {
         }
 
         guard let renderer = Renderer(engine: engine, format: format, maxFrames: Self.maxFrames,
-                                      source: source, meter: meter) else {
+                                      source: source, meter: meter, reverb: reverbProcessor) else {
             engine.stop()
             throw PipelineError.engineFailed("couldn't allocate render buffer")
         }
@@ -667,6 +667,7 @@ final class TapPipeline {
         engine?.stop()
         engine = nil
         renderer = nil
+        reverbProcessor = nil
     }
 
     // MARK: Helpers
