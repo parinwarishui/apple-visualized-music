@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>AVM Freeverb</string>
+    <key>CFBundleDisplayName</key>
+    <string>AVM Freeverb</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.yourname.avm-freeverb</string>
+    <key>CFBundleExecutable</key>
+    <string>AppleVisualizedMusic</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.2</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <!-- Shown in the one-time system audio-capture permission prompt. -->
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>AVM Freeverb captures Music's audio so it can add live effects and make the visualizer react to the song.</string>
+    <!-- Fallback only: Apple Visualized Music never records the mic, but some headsets (AirPods)
+         expose a mic on the same device. If macOS counts that as mic use and this key
+         is missing, it can terminate the app instead of asking. -->
+    <!-- Shown in the one-time "wants to control Music" prompt. One approval covers
+         reading the track and artwork and the player controls. -->
+    <key>NSAppleEventsUsageDescription</key>
+    <string>AVM Freeverb reads the current song and its album artwork from Music, and sends play, pause, skip, seek, shuffle and repeat commands when you use its player controls.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>AVM Freeverb doesn't record your microphone. macOS asks because your headphones' mic is part of the same audio device.</string>
+</dict>
+</plist>
