@@ -98,7 +98,7 @@ Music's EQ output stays in floating point until macOS applies the volume, so a b
 | --- | --- | --- | --- | --- |
 | Equalizer | 10 vertical sliders + preset menu | `AVAudioUnitEQ(numberOfBands: 10)` | Bands at `EqualizerBands.frequencies` (31, 62, 125, 250, 500 Hz, 1, 2, 4, 8, 16 kHz). Each band `.parametric`, bandwidth 1 octave, gain −12…+12 dB | Off, flat |
 | Filter | Low cut, High cut sliders | Two `AVAudioUnitEffect`s wrapping Apple's high-pass and low-pass units | `kHipassParam_CutoffFrequency` 20 Hz–2 kHz, `kLowPassParam_CutoffFrequency` 200 Hz–20 kHz | Off, 20 Hz / 20 kHz |
-| Reverb | Space segmented control, Mix slider | `ReverbProcessor` (`ReverbDSP`, applied in `Renderer`, not a graph node) | `ReverbPresets.all` (Room, Chamber, Plate, Hall, Cathedral — each an `AVMReverbSpace.shape`), `wetDryMix` 0–100% | On, Hall, 35% |
+| Reverb | Space menu, Mix/Size/Pre-delay/Tone sliders | `ReverbProcessor` (`ReverbDSP`, applied in `Renderer`, not a graph node) | `reverbShape` (`ReverbShape(decay:preDelay:tone:)`, 0.3–10s / 0–150ms / 0–1), `wetDryMix` 0–100%. Room/Chamber/Plate/Hall/Cathedral (`ReverbPresets.all`) just set the three sliders | On, Hall's shape, 35% |
 
 Every node stays in the graph for the life of the pipeline. A module's switch sets `kAudioUnitProperty_BypassEffect` on its unit (`setBypass(_:on:)`), and the Filter switch bypasses both of its units. This avoids changing the graph while the engine is rendering in real time. Parameter changes go through the per-effect setters on `TapPipeline` (`setEQGains`, `setLowPassCutoff`, `setPreset`, …), called on the work queue. Setting an Audio Unit property or parameter from outside the render thread is the standard host pattern; the unit synchronizes internally.
 
@@ -109,6 +109,12 @@ Every node stays in the graph for the life of the pipeline. A module's switch se
 `EqualizerPresets.all` in `AVMController.swift` holds Apple Music's 22 EQ presets as 10 gains each. Apple doesn't expose them through an API, so these are the published iTunes/Music values. Music's bands sit at 32 and 64 Hz where ours are at 31 and 62 Hz, which makes no audible difference.
 
 The selected preset isn't stored. `eqPresetName` compares the current `eqGains` with every preset (within 0.01 dB) and returns the matching name, or "Custom". Moving any slider therefore switches the menu to Custom, and the selection survives relaunches through the saved gains. `applyEQPreset(named:)` sets all 10 gains and turns the EQ on, as Music does.
+
+### Reverb shape (Size / Pre-delay / Tone)
+
+Same pattern as the EQ presets above, applied to three continuous sliders instead of ten: `reverbSize` (RT60 decay, 0.3–10s), `reverbPreDelay` (ms, 0–150) and `reverbTone` (0–1) are the real stored state; `reverbShape` just packages them into a `ReverbShape` for `ReverbDSP`. `reverbSpaceName` compares the three against every `AVMReverbSpace.shape` (within 0.05s / 0.5ms / 0.005) and returns the matching Space's name, or "Custom". `applyReverbSpace(named:)` sets all three sliders from that Space's shape — it doesn't touch `reverbEnabled`, unlike `applyEQPreset`, since picking a Space isn't a "turn it on" action the way picking an EQ preset is in Music.
+
+Rebuilding the convolution response is tens of milliseconds for a long room — too slow to do on every tick of a drag — so `pushReverbShape()` debounces it: each of the three sliders' `didSet` cancels any pending rebuild and reschedules one 40 ms out on the work queue, same coalescing as reverb-room's own `Model.push`. Only the shape at the end of a 40 ms-quiet period actually reaches `TapPipeline.setReverbShape`.
 
 ## 4. Pipeline construction and teardown
 
@@ -223,13 +229,15 @@ Effect changes (switches, sliders, presets) **don't** cause a rebuild. They're a
 Settings are stored in `UserDefaults` (standard suite) and written from each property's `didSet`. Saved values are validated on load, because a hand-edited preference could otherwise reach an Audio Unit:
 
 - Numbers are clamped to their control's range and fall back to the default if they're missing or not a number (`savedFloat`, and `savedMix` for the reverb mix).
-- The reverb preset must be one of the five in `ReverbPresets.all`; a missing or unrecognized saved value falls back to Hall (`AVMController.savedPreset`).
+- `reverbSize`/`reverbPreDelay`/`reverbTone` are each clamped to their own range; a missing value falls back to Hall's shape. An install from before these sliders existed (only `reverbPreset`, one of the five Spaces, was saved) has that old value read once, by `legacySpace()`, to seed the three new keys — nothing writes `reverbPreset` anymore.
 - `eqGains` must be exactly 10 numbers. Each is clamped to ±12 dB. Anything else falls back to flat.
 
 | Key | Default |
 | --- | --- |
 | `reverbEnabled` | `true` |
-| `reverbPreset` | `.hall` (shown as "Hall") |
+| `reverbSize` | 2.6 (s, Hall's decay) |
+| `reverbPreDelay` | 25 (ms, Hall's) |
+| `reverbTone` | 0.6 (Hall's) |
 | `wetDryMix` | 35 |
 | `filterEnabled` | `false` |
 | `highPassCutoff` | 20 (Hz) |
@@ -240,7 +248,7 @@ Settings are stored in `UserDefaults` (standard suite) and written from each pro
 | `tankSpeed` | 1 (stored by `TankModel`, clamped to 0.2–3) |
 | `tankMode` | `bokeh` (unknown values, including the removed `blobs`, `shapes` and `comet`, fall back to it) |
 
-Older builds also saved `selectedSource`, and development builds wrote keys for effects that were later removed (`compressor*`, `delay*`, `murker*`). Nothing reads them anymore.
+Older builds also saved `selectedSource`, `reverbPreset` (superseded by the three keys above, but still read once to migrate an existing install), and development builds wrote keys for effects that were later removed (`compressor*`, `delay*`, `murker*`). Nothing writes the first or last group anymore.
 
 ## 7. App lifecycle and making sure the source is un-muted
 
@@ -400,7 +408,8 @@ flowchart LR
 
 | Change | Location |
 | --- | --- |
-| Add or rename a reverb preset | `ReverbPresets.all` in `AVMController.swift` |
+| Add or rename a reverb Space (quick-select preset) | `AVMReverbSpace` in `AVMController.swift` (`ReverbPresets.all` derives its names from it) |
+| Change the reverb sliders' own ranges | `ReverbSettings`-equivalent ranges are inline on `reverbSize`/`reverbPreDelay`/`reverbTone` and their `savedReverb*` clamps, and on the `ValueSlider(range:)` calls in `Views.swift` |
 | Add or change an EQ preset | `EqualizerPresets.all` in `AVMController.swift` (10 gains, in band order) |
 | Change the EQ bands | `EqualizerBands.frequencies` in `AudioPipeline.swift`. Changing the count resets saved gains to flat and invalidates the presets |
 | Add an effect | `AudioPipeline.swift`: a node on `TapPipeline`, attach and connect it in `buildEngine`, a field on `EffectsSettings`, setters. `AVMController.swift`: persisted properties whose `didSet` calls the setters, and pass them into `EffectsSettings` in `buildPipeline`. `Views.swift`: an `EffectModuleBox` in `effectsRack` (and grow the fixed window height in `AVMApp.swift` if needed) |

@@ -229,17 +229,36 @@ struct MainWindow: View {
                 }
 
                 EffectModuleBox(name: "Reverb", isEnabled: $controller.reverbEnabled) {
-                    Picker("Space", selection: $controller.preset) {
-                        ForEach(ReverbPresets.all, id: \.value) { item in
-                            Text(item.name).tag(item.value)
+                    LabeledContent("Space") {
+                        Picker("Space", selection: reverbSpaceBinding) {
+                            // Only listed while the sliders don't match a Space, so
+                            // the menu always has an item for the current selection.
+                            if controller.reverbSpaceName == AVMController.customReverbSpaceName {
+                                Text(AVMController.customReverbSpaceName).tag(AVMController.customReverbSpaceName)
+                                Divider()
+                            }
+                            ForEach(ReverbPresets.all, id: \.name) { item in
+                                Text(item.name).tag(item.name)
+                            }
                         }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: 180)
                     }
-                    .pickerStyle(.segmented)
 
                     LabeledContent("Mix") {
                         ValueSlider(value: $controller.wetDryMix, range: 0...100, unit: "%")
                     }
-
+                    LabeledContent("Size") {
+                        ValueSlider(value: $controller.reverbSize, range: 0.3...10, unit: "s")
+                    }
+                    LabeledContent("Pre-delay") {
+                        ValueSlider(value: $controller.reverbPreDelay, range: 0...150, unit: "ms")
+                    }
+                    LabeledContent("Tone") {
+                        ValueSlider(value: $controller.reverbTone, range: 0...1, unit: "",
+                                    customLabel: controller.reverbToneName)
+                    }
                 }
 
                 EffectModuleBox(name: "Equalizer", isEnabled: $controller.eqEnabled) {
@@ -279,6 +298,13 @@ struct MainWindow: View {
         Binding(
             get: { controller.eqPresetName },
             set: { controller.applyEQPreset(named: $0) }
+        )
+    }
+
+    private var reverbSpaceBinding: Binding<String> {
+        Binding(
+            get: { controller.reverbSpaceName },
+            set: { controller.applyReverbSpace(named: $0) }
         )
     }
 
@@ -653,11 +679,14 @@ struct ValueSlider: View {
     @Binding var value: Float
     let range: ClosedRange<Float>
     let unit: String
+    /// Replaces the numeric readout entirely (e.g. Tone's "Warm"/"Bright"),
+    /// for a control whose raw number means nothing on its own.
+    var customLabel: String? = nil
 
     var body: some View {
         HStack(spacing: 10) {
             Slider(value: $value, in: range)
-            Text(Self.readout(value, unit: unit))
+            Text(customLabel ?? Self.readout(value, unit: unit))
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
                 .frame(width: 60, alignment: .trailing)
@@ -667,9 +696,14 @@ struct ValueSlider: View {
 
 extension ValueSlider {
     /// "20 kHz" rather than "20000 Hz", which doesn't fit the readout column.
+    /// "s" gets one decimal — Reverb's Size range starts at 0.3, where whole
+    /// seconds would round every short room to the same "1 s"/"0 s".
     static func readout(_ value: Float, unit: String) -> String {
         if unit == "Hz", value >= 1000 {
             return String(format: "%.1f kHz", value / 1000)
+        }
+        if unit == "s" {
+            return String(format: "%.1f s", value)
         }
         return String(format: "%.0f %@", value, unit)
     }

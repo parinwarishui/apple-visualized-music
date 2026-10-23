@@ -81,7 +81,7 @@ enum EqualizerBands {
 struct EffectsSettings {
     var reverbEnabled: Bool
     var wetDryMix: Float
-    var preset: AVMReverbSpace
+    var shape: ReverbShape
 
     var filterEnabled: Bool
     var highPassCutoff: Float
@@ -409,11 +409,12 @@ final class TapPipeline {
         reverbMixPercent = value
         reverbProcessor?.setMix(reverbIsEnabled ? value / 100 : 0)
     }
-    func setPreset(_ preset: AVMReverbSpace) {
+    func setReverbShape(_ shape: ReverbShape) {
         guard let reverbProcessor else { return }
         // Building the response is slow (tens of ms for a long room); this already
-        // runs on TapPipeline's work queue, never the real-time thread.
-        reverbProcessor.submit(reverbProcessor.makeSpectra(preset.shape))
+        // runs on TapPipeline's work queue, never the real-time thread, and the
+        // controller already debounces slider drags before calling this.
+        reverbProcessor.submit(reverbProcessor.makeSpectra(shape))
     }
     func setReverbEnabled(_ enabled: Bool) {
         reverbIsEnabled = enabled
@@ -603,7 +604,7 @@ final class TapPipeline {
         let reverbProcessor = ReverbProcessor(sampleRate: sampleRate,
                                               mix: reverbIsEnabled ? reverbMixPercent / 100 : 0,
                                               nextRoom: false)
-        reverbProcessor.submit(reverbProcessor.makeSpectra(settings.preset.shape))
+        reverbProcessor.submit(reverbProcessor.makeSpectra(settings.shape))
         self.reverbProcessor = reverbProcessor
 
         engine.attach(sourceNode)

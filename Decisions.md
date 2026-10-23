@@ -4,6 +4,17 @@ All notable changes to Apple Visualized Music, newest first, in the [Keep a Chan
 
 Dates are the days the work was done. Everything from 2026-10-15 happened in one working session, so it's grouped by type of change, not by hour.
 
+## Reverb: Size/Pre-delay/Tone sliders - 2026-10-22
+
+User request: reverb-room let you adjust room size and other room parameters directly, not just pick from a fixed list — bring that into AVM too.
+
+- **No separate "width" control exists to port.** reverb-room's own UI (`ContentView.swift`/`Settings.swift`) exposes exactly three continuous room parameters — "Room size" (really RT60 decay), Pre-delay, Tone — plus Mix and a Pitch shifter (not ported; AVM has no pitch control). There's no user-facing stereo-width slider anywhere in reverb-room; internally `ReverbProcessor` does true stereo crossfeed, but that's not an exposed parameter. So this adds Size/Pre-delay/Tone, matching reverb-room's own three, not a fourth "width" that reverb-room never had either.
+- **The five Spaces (Room/Chamber/Plate/Hall/Cathedral) become quick-select starting points, not the only way in.** `AVMReverbSpace`'s five `ReverbShape`s are unchanged; picking one from the Space menu just sets the three sliders to its numbers, exactly like reverb-room's own `Model.apply(preset)`. Moving any slider off a Space switches the menu to "Custom" — reusing AVM's own existing EQ-preset pattern (`eqPresetName`/`applyEQPreset`) rather than reverb-room's per-field "tuned" indicator, so there's one derived-not-stored "which preset is this" convention in the codebase, not two.
+- **Debounced, not applied per tick.** Rebuilding the convolution impulse response is tens of ms for a long room (same cost noted when ReverbDSP was first ported) — too slow for every pixel of a slider drag. `AVMController.pushReverbShape()` cancels and reschedules a `DispatchWorkItem` 40 ms out on every change to `reverbSize`/`reverbPreDelay`/`reverbTone`, copied directly from reverb-room's own `Model.push` (`shapeQueue.asyncAfter(deadline: .now() + 0.04, ...)`), rather than inventing a different coalescing scheme.
+- **Units kept as reverb-room's own UI shows them**, not AVM's internal `ReverbShape` units: Size in seconds (0.3...10, one decimal in the readout — whole seconds would round AVM's shortest room, 0.6s, to "1 s"), Pre-delay in ms (0...150), Tone as a qualitative Dark/Mellow/Warm/Clear/Bright label (same bucketing as reverb-room's `toneName`) instead of a bare 0...1 number, which means nothing on its own.
+- **Migration, not reset.** Existing installs saved one `reverbPreset` key (a Space name). That's read once (`AVMController.legacySpace()`) to seed the three new slider keys on first launch after this change, so a user's saved Hall/Cathedral/etc. choice carries over as that Space's numbers rather than silently resetting to a default.
+- **Not yet confirmed by ear or compiled** — same standing caveat as the rest of this file; no Swift toolchain in this environment.
+
 ## avm-reverbdsp branch - 2026-10-22
 
 Separate branch (`git worktree .worktree-reverbdsp`), not merged to main. Goal: replace both the stock `AVAudioUnitReverb` (reported "murky") and the unmerged `avm-supermassive` branch's hosted-plugin approach with a real, from-scratch reverb — by porting the convolution engine already built, tuned and shipped in `reverb-room`, a sibling project co-developed with this one that went further on exactly this problem.
