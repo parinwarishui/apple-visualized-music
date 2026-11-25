@@ -9,16 +9,43 @@ import AppKit
 import AVFoundation
 import CoreAudio
 import Observation
+import ReverbDSP
 import SwiftUI
 
+/// AVM's five "Space" presets. Each is just three numbers — decay (RT60),
+/// pre-delay and tone — fed to ReverbDSP's impulse-response synthesizer, which
+/// builds a stereo room response from them (early reflections, a decorrelated
+/// diffuse tail, air/wall absorption) rather than picking a canned algorithm or
+/// a hosted plugin's mode. Replaces the old AVAudioUnitReverb factory presets
+/// and the avm-supermassive branch's Mode/parameter mapping — see Decisions.md.
+///
+/// Hall and Cathedral reuse the reverb-room sibling project's own "Concert
+/// Hall" and "Cathedral" room numbers directly, since they're already tuned.
+/// Room, Chamber and Plate are AVM's own: Room and Plate short and bright with
+/// little pre-delay (a plate's reflections arrive almost at once; a room is
+/// just small), Chamber a size up from Room but darker and with more pre-delay.
+/// Not yet confirmed by ear — a first pass, same standing caveat as everything
+/// else in this app's effects chain.
+enum AVMReverbSpace: String, CaseIterable, Hashable {
+    case room = "Room"
+    case chamber = "Chamber"
+    case plate = "Plate"
+    case hall = "Hall"
+    case cathedral = "Cathedral"
+
+    var shape: ReverbShape {
+        switch self {
+        case .room:      return ReverbShape(decay: 0.6, preDelay: 0.008, tone: 0.65)
+        case .chamber:   return ReverbShape(decay: 1.4, preDelay: 0.016, tone: 0.5)
+        case .plate:     return ReverbShape(decay: 1.8, preDelay: 0.004, tone: 0.78)
+        case .hall:      return ReverbShape(decay: 2.6, preDelay: 0.025, tone: 0.6)
+        case .cathedral: return ReverbShape(decay: 7.5, preDelay: 0.060, tone: 0.45)
+        }
+    }
+}
+
 enum ReverbPresets {
-    static let all: [(name: String, value: AVAudioUnitReverbPreset)] = [
-        ("Room", .mediumRoom),
-        ("Chamber", .mediumChamber),
-        ("Plate", .plate),
-        ("Hall", .largeHall),
-        ("Cathedral", .cathedral)
-    ]
+    static let all: [(name: String, value: AVMReverbSpace)] = AVMReverbSpace.allCases.map { ($0.rawValue, $0) }
 }
 
 /// Apple Music's built-in EQ presets (Music › Window › Equalizer). Apple doesn't
@@ -61,7 +88,12 @@ final class AVMController {
 
     private enum Keys {
         static let wet = "wetDryMix"
-        static let preset = "reverbPreset"
+        /// Pre-10/22 single preset key. Read once, to seed the three sliders
+        /// below on an existing install; nothing writes it anymore.
+        static let legacyPreset = "reverbPreset"
+        static let reverbSize = "reverbSize"
+        static let reverbPreDelay = "reverbPreDelay"
+        static let reverbTone = "reverbTone"
         static let reverbEnabled = "reverbEnabled"
         static let filterEnabled = "filterEnabled"
         static let highPassCutoff = "highPassCutoff"
@@ -86,12 +118,70 @@ final class AVMController {
         }
     }
 
-    var preset: AVAudioUnitReverbPreset = AVMController.savedPreset() {
+    /// Seconds for the reverb to die away (RT60), 0.3...10 — "Room size" in
+    /// reverb-room's own UI, renamed here since AVM's rooms aren't literal
+    /// physical sizes (Plate has no "size" at all).
+    var reverbSize: Float = AVMController.savedReverbSize() {
         didSet {
-            let value = preset
-            UserDefaults.standard.set(value.rawValue, forKey: Keys.preset)
-            work.async { [weak self] in self?.pipeline?.setPreset(value) }
+            UserDefaults.standard.set(reverbSize, forKey: Keys.reverbSize)
+            pushReverbShape()
         }
+    }
+    /// Milliseconds before the reverb tail starts, 0...150.
+    var reverbPreDelay: Float = AVMController.savedReverbPreDelay() {
+        didSet {
+            UserDefaults.standard.set(reverbPreDelay, forKey: Keys.reverbPreDelay)
+            pushReverbShape()
+        }
+    }
+    /// 0 = dark, 1 = bright.
+    var reverbTone: Float = AVMController.savedReverbTone() {
+        didSet {
+            UserDefaults.standard.set(reverbTone, forKey: Keys.reverbTone)
+            pushReverbShape()
+        }
+    }
+
+    /// The room shape the three sliders above currently describe.
+    var reverbShape: ReverbShape {
+        ReverbShape(decay: Double(reverbSize), preDelay: Double(reverbPreDelay) / 1000, tone: Double(reverbTone))
+    }
+
+    static let customReverbSpaceName = "Custom"
+
+    /// The named Space the sliders currently match (within slider precision),
+    /// or "Custom" once any of them has been moved off it. Derived, not
+    /// stored, same pattern as `eqPresetName`.
+    var reverbSpaceName: String {
+        AVMReverbSpace.allCases.first { space in
+            let shape = space.shape
+            return abs(shape.decay - Double(reverbSize)) < 0.05
+                && abs(shape.preDelay * 1000 - Double(reverbPreDelay)) < 0.5
+                && abs(shape.tone - Double(reverbTone)) < 0.005
+        }?.rawValue ?? Self.customReverbSpaceName
+    }
+
+    /// A qualitative read on Tone, since 0...1 means nothing on its own —
+    /// same bucketing reverb-room's own UI uses.
+    var reverbToneName: String {
+        switch reverbTone {
+        case ..<0.2: return "Dark"
+        case ..<0.4: return "Mellow"
+        case ..<0.65: return "Warm"
+        case ..<0.85: return "Clear"
+        default: return "Bright"
+        }
+    }
+
+    /// Picking a named Space sets the three sliders to its shape; moving any
+    /// of them afterwards switches the picker to "Custom", like the EQ preset
+    /// menu switches to Custom when a band slider moves off its preset.
+    func applyReverbSpace(named name: String) {
+        guard let space = AVMReverbSpace(rawValue: name) else { return }
+        let shape = space.shape
+        reverbSize = Float(shape.decay)
+        reverbPreDelay = Float(shape.preDelay * 1000)
+        reverbTone = Float(shape.tone)
     }
 
     var reverbEnabled: Bool = AVMController.savedBool(Keys.reverbEnabled, default: true) {
@@ -179,6 +269,7 @@ final class AVMController {
     @ObservationIgnored private var restartToken = 0
     @ObservationIgnored private var watchdog: Timer?
     @ObservationIgnored private var scanTimer: Timer?
+    @ObservationIgnored private var reverbShapeWork: DispatchWorkItem?
     @ObservationIgnored private var defaultOutputListener: AudioObjectPropertyListenerBlock?
     /// Bumped by every start, stop and rebuild. An async completion (permission
     /// answer, finished build) only applies if the generation it began in is still
@@ -194,11 +285,30 @@ final class AVMController {
         observeSourceQuitting()
     }
 
-    /// Only presets the picker offers. Imported Objective-C enums accept any raw
-    /// value, so a hand-edited preference could otherwise reach the reverb unit.
-    private static func savedPreset() -> AVAudioUnitReverbPreset {
-        let raw = UserDefaults.standard.object(forKey: Keys.preset) as? Int
-        return ReverbPresets.all.first { $0.value.rawValue == raw }?.value ?? .largeHall
+    /// A Space saved under the old single-preset key, from before the three
+    /// sliders existed. Read once, to seed an existing install's sliders;
+    /// falls back to Hall if it's missing or not one of the five Spaces.
+    private static func legacySpace() -> AVMReverbSpace? {
+        UserDefaults.standard.string(forKey: Keys.legacyPreset).flatMap(AVMReverbSpace.init(rawValue:))
+    }
+
+    private static func savedReverbSize() -> Float {
+        if let number = UserDefaults.standard.object(forKey: Keys.reverbSize) as? NSNumber, number.floatValue.isFinite {
+            return min(max(number.floatValue, 0.3), 10)
+        }
+        return Float(legacySpace()?.shape.decay ?? AVMReverbSpace.hall.shape.decay)
+    }
+    private static func savedReverbPreDelay() -> Float {
+        if let number = UserDefaults.standard.object(forKey: Keys.reverbPreDelay) as? NSNumber, number.floatValue.isFinite {
+            return min(max(number.floatValue, 0), 150)
+        }
+        return Float((legacySpace()?.shape.preDelay ?? AVMReverbSpace.hall.shape.preDelay) * 1000)
+    }
+    private static func savedReverbTone() -> Float {
+        if let number = UserDefaults.standard.object(forKey: Keys.reverbTone) as? NSNumber, number.floatValue.isFinite {
+            return min(max(number.floatValue, 0), 1)
+        }
+        return Float(legacySpace()?.shape.tone ?? AVMReverbSpace.hall.shape.tone)
     }
 
     /// The saved mix, clamped to 0...100. Falls back to 35 if it's missing or not a number.
@@ -288,6 +398,18 @@ final class AVMController {
 
     // MARK: Pipeline lifecycle
 
+    /// Coalesces slider drags into one convolution rebuild, 40 ms after the
+    /// last change — same debounce as reverb-room's own Model, since building
+    /// the impulse response (tens of ms for a long room) is too slow to do on
+    /// every tick of a drag.
+    private func pushReverbShape() {
+        reverbShapeWork?.cancel()
+        let shape = reverbShape
+        let item = DispatchWorkItem { [weak self] in self?.pipeline?.setReverbShape(shape) }
+        reverbShapeWork = item
+        work.asyncAfter(deadline: .now() + 0.04, execute: item)
+    }
+
     private func rebuild(reason: String) {
         dlog("Rebuilding pipeline: \(reason)")
         stopWatchdog()
@@ -299,7 +421,7 @@ final class AVMController {
     private func buildPipeline() {
         let current = generation
         let settings = EffectsSettings(
-            reverbEnabled: reverbEnabled, wetDryMix: wetDryMix, preset: preset,
+            reverbEnabled: reverbEnabled, wetDryMix: wetDryMix, shape: reverbShape,
             filterEnabled: filterEnabled, highPassCutoff: highPassCutoff, lowPassCutoff: lowPassCutoff,
             eqEnabled: eqEnabled, eqGains: eqGains)
 
@@ -453,7 +575,9 @@ final class AVMController {
 
     // MARK: Health check
 
-    /// Runs every 0.5 s while reverb is on. Two checks:
+    /// Runs every 0.5 s while reverb is on. Three things:
+    /// - Frees any impulse response the reverb's audio thread has finished with
+    ///   (ReverbProcessor.collectGarbage), same as reverb-room's own tick.
     /// - The engine keeps failing to render (Renderer plays the dry tap meanwhile): stop.
     /// - The source is actively playing but the tap has delivered nothing but zeros
     ///   for a few seconds, which almost always means capture permission is missing:
@@ -476,6 +600,7 @@ final class AVMController {
 
     private func checkHealth() {
         guard phase == .running, let startedAt else { return }
+        pipeline?.collectGarbage()
         if meter.renderFailed {
             dlog("Health check: the reverb engine keeps failing to render — stopping")
             stop()

@@ -17,7 +17,7 @@ APP_DISPLAY_NAME="Apple Visualized Music"
 # Must match Package.swift's executable target name and Info.plist's
 # CFBundleExecutable — LaunchServices looks for Contents/MacOS/<that name> exactly.
 EXECUTABLE_NAME="AppleVisualizedMusic"
-BUNDLE_ID="com.yourname.apple-visualized-music"
+BUNDLE_ID="com.parinwarishui.apple-visualized-music"
 BUILD_DIR="build"
 APP_BUNDLE="$BUILD_DIR/$APP_DISPLAY_NAME.app"
 ENTITLEMENTS="AVM.entitlements"
@@ -47,6 +47,8 @@ rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
 cp "$BIN_DIR/$EXECUTABLE_NAME" "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME"
 cp Info.plist "$APP_BUNDLE/Contents/Info.plist"
+mkdir -p "$APP_BUNDLE/Contents/Resources"
+cp Resources/AppIcon.icns "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 
 # Hardened runtime: macOS then ignores DYLD_* environment variables and refuses to
 # load libraries that aren't signed by Apple or by us, so no other code can be

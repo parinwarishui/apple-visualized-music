@@ -7,9 +7,11 @@
     <key>CFBundleDisplayName</key>
     <string>Apple Visualized Music</string>
     <key>CFBundleIdentifier</key>
-    <string>com.yourname.apple-visualized-music</string>
+    <string>com.parinwarishui.apple-visualized-music</string>
     <key>CFBundleExecutable</key>
     <string>AppleVisualizedMusic</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
