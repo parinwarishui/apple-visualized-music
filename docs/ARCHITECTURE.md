@@ -387,11 +387,10 @@ flowchart LR
 
 - SwiftPM has one `executableTarget` (`AppleVisualizedMusic`) plus the `AVMAtomics` C target, and no package dependencies. The minimum OS is macOS 14.2 (`Package.swift` and `LSMinimumSystemVersion`).
 - The executable name must match `CFBundleExecutable` in `Info.plist` and `EXECUTABLE_NAME` in `build.sh`. LaunchServices looks for exactly `Contents/MacOS/<CFBundleExecutable>`, and a mismatch gives the "app is damaged or incomplete" error.
-- `build.sh` builds the bundle by hand. There's no Xcode project, no asset catalog and no app icon.
+- `build.sh` builds the bundle by hand. There's no Xcode project and no asset catalog. The app icon (`Resources/AppIcon.icns`) is copied into the bundle.
 - `codesign` runs with `--options runtime --entitlements AVM.entitlements`. A certificate named `AVM Dev` is used by its SHA-1 hash, and two certificates with that name stop the build with an explanation.
 - Before rebuilding, `build.sh` sends SIGTERM to the running `AppleVisualizedMusic` process and waits up to 10 s for it to exit.
 - The app is always started with `open`, so macOS gives the permission to Apple Visualized Music and not to the terminal.
-- Bundle ID `com.yourname.apple-visualized-music` is a placeholder and appears in both `Info.plist` and `build.sh`.
 
 ## 12. Known risks and gaps
 
